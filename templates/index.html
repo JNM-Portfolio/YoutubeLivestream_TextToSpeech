@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Chat Overlay</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        body {
+            background-color: rgba(0, 0, 0, 0); /* Transparent background */
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            font-family: 'Arial', sans-serif;
+            color: white;
+        }
+
+        #overlay-container {
+            position: absolute;
+            bottom: 20px; /* Position the entire block */
+            left: 20px;
+            /* width: 400px; /* OPTIONAL: Keep if you want a fixed width background */
+            display: flex; /* Use flexbox */
+            flex-direction: column; /* Stack children vertically */
+            align-items: flex-start; /* Align children to the left (or use 'center') */
+            /* background-color: rgba(0, 0, 0, 0.5); /* Test background */
+        }
+
+        #message-display {
+            padding: 15px; /* Adjusted padding slightly */
+            background-color: rgba(30, 30, 30, 0.8); /* Slightly less transparent */
+            border-radius: 8px;
+            font-size: 18px;
+            text-shadow: 1px 1px 2px black;
+            max-height: 150px;
+            overflow-y: auto;
+            opacity: 0;
+            transition: opacity 0.5s ease-in-out;
+             /* Ensure it doesn't exceed the character width if desired, or let it grow */
+            max-width: 300px; /* Example: Limit width */
+            /* Or use width: 100%; if you want it to match overlay-container width */
+        }
+
+        #message-display.visible {
+            opacity: 1;
+        }
+
+        /* Container for the two faust parts */
+        #faust-container {
+            width: 200px ; /* 1000px;  /* Your desired width */
+            height: 248.4px; /* 1242px; /* Your calculated height */
+            margin-bottom: 10px; /* Add space BELOW the character, before the message */
+            /* border: 1px dashed red;  /* Debug border */
+            /* transition remains useful for the random movement if you re-enable it */
+            transition: left 0.5s ease-in-out, bottom 0.5s ease-in-out;
+        }
+
+        /* Style for both image parts */
+        #faust-top, #faust-bottom {
+            /* position: absolute; */
+            left: 0;
+            width: 100%; /* Use container width */
+            background-size: contain; /* Scale image nicely */
+            background-repeat: no-repeat;
+            /* border: 1px dashed teal; /* Debug border */
+        }
+
+        /* Bottom part - Stays fixed */
+        #faust-bottom {
+            bottom: 0;
+            height: 89.53%;
+            background-image: url('/static/FaustBottom.png');
+            background-position: bottom center;
+            z-index: 1;
+        }
+
+        /* Top part - This will tilt */
+        #faust-top {
+            bottom: 89.53%;
+            height: 10.47%;
+            background-image: url('/static/FaustTop.png');
+            background-position: top center;
+            transform-origin: 35% bottom;
+            transition: transform 0.15s ease-in-out;
+            z-index: 2;
+        }
+
+        /* The 'talking' state: Apply rotation to the top part */
+        #faust-top.talking {
+            transform: rotate(15deg); /* << ADJUST ANGLE as desired */
+        }
+
+         /* Simple bounce animation for the container */
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-5px); } /* << ADJUST BOUNCE height */
+        }
+        /* Apply bounce animation to the container when talking */
+        #faust-container.bouncing {
+             animation: bounce 0.2s ease-in-out; /* << ADJUST BOUNCE speed */
+        }
+
+    </style>
+</head>
+<body>
+    <div id="overlay-container">
+        <!-- Container for the Faust character -->
+        <div id="faust-container">
+            <div id="faust-top"></div>
+            <div id="faust-bottom"></div>
+        </div>
+        <div id="message-display"></div>
+    </div>
+
+    <script>
+        // --- CONFIGURABLE DELAY ---
+        const FLAP_START_DELAY_MS = 1400; // Adjust this value (in milliseconds)
+        const FLAP_SPEED = 150; // Adjust flap speed (in milliseconds) Lower number = More flap
+        
+        const MESSAGE_DISPLAY_DURATION = 10000; // 10 seconds
+
+        const socket = io();
+
+        const messageDisplay = document.getElementById('message-display');
+        // Get references to the new elements
+        const faustContainer = document.getElementById('faust-container');
+        const faustTop = document.getElementById('faust-top');
+        
+        let messageTimeout = null;
+        let flapInterval = null; // Variable to hold the flap timer
+        let isTalking = false;    // Flag to track talking state
+
+        socket.on('connect', () => console.log('Connected to server'));
+        socket.on('disconnect', () => console.log('Disconnected from server'));
+
+        socket.on('new_message', (data) => {
+            console.log('Message received:', data);
+            messageDisplay.textContent = data.text;
+            messageDisplay.classList.add('visible');
+
+            if (messageTimeout) {
+                clearTimeout(messageTimeout);
+            }
+            messageTimeout = setTimeout(() => {
+                 messageDisplay.classList.remove('visible');
+             }, MESSAGE_DISPLAY_DURATION); // 10 seconds
+        });
+
+        // --- UPDATED TTS HANDLERS ---
+        socket.on('tts_start', (characterData) => { // Update to receive character data later if implementing #2
+            // If NOT implementing character switching yet, just use: socket.on('tts_start', () => {
+            console.log('TTS Start signal received');
+
+
+            // --- Start Flapping Animation with Delay ---
+            if (!isTalking) {
+                isTalking = true;
+                console.log(`Waiting ${FLAP_START_DELAY_MS}ms before starting flap animation...`);
+
+                // Clear any residual interval just in case
+                if (flapInterval) {
+                    clearInterval(flapInterval);
+                    flapInterval = null; // Ensure it's reset
+                }
+
+                // Use setTimeout to delay the start of flapping
+                setTimeout(() => {
+                    // Check if we are still supposed to be talking (tts_stop might have arrived quickly)
+                    if (!isTalking) {
+                        console.log("TTS stopped before flap delay ended. Not starting flap.");
+                        return;
+                    }
+
+                    console.log('Starting flapping animation now.');
+                    // Start flapping interval
+                    flapInterval = setInterval(() => {
+                        faustTop.classList.toggle('talking');
+                        faustContainer.classList.remove('bouncing');
+                        void faustContainer.offsetWidth;
+                        faustContainer.classList.add('bouncing');
+                    }, FLAP_SPEED); // Adjust flap speed
+
+                    // Initial bounce (now delayed as well)
+                    faustContainer.classList.remove('bouncing');
+                    void faustContainer.offsetWidth;
+                    faustContainer.classList.add('bouncing');
+
+                }, FLAP_START_DELAY_MS); // Apply the delay
+
+            } else {
+                console.log('Already talking, ignoring redundant tts_start');
+            }
+        });
+
+        socket.on('tts_stop', () => {
+            console.log('TTS Stop signal received');
+            if (isTalking) {
+                isTalking = false;
+                console.log('Stopping flapping animation...');
+                if (flapInterval) {
+                    clearInterval(flapInterval); // Stop the interval
+                    flapInterval = null;
+                }
+                // Ensure head is in the resting (non-talking) state
+                faustTop.classList.remove('talking');
+                // Ensure bouncing stops
+                faustContainer.classList.remove('bouncing');
+            } else {
+                 console.log('Not currently talking, ignoring tts_stop');
+            }
+        });
+    </script>
+</body>
+</html>
