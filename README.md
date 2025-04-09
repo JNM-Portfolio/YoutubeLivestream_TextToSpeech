@@ -1,6 +1,6 @@
 # YoutubeLivestream_TextToSpeech
  
-Reads YouTube live chat messages based on an activation phrase ("Faust says...") and uses Text-to-Speech (TTS) with an animated character overlay for streaming.
+Reads YouTube live chat messages based on an activation phrase and uses Text-to-Speech (TTS) with an animated character overlay for streaming.
 
 ![Screenshot Placeholder](screenshot.png)  <!-- TODO: Add a screenshot or GIF! -->
 
