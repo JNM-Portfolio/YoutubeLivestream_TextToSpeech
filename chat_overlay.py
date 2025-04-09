@@ -17,13 +17,8 @@ from tts_services import get_tts_service, BaseTtsService
 load_dotenv()
 
 # --- Configuration ---
-TTS_PROVIDER = "elevenlabs" # Or "pyttsx3"
+TTS_PROVIDER = "elevenlabs"
 TTS_CONFIG = {
-    "pyttsx3": {
-        "rate": 160,       # Optional: Adjust speech rate
-        "voice_index": None # Optional: Set to 0, 1, etc. to choose a specific voice
-                           # (Run a separate script to list available voices/indices if needed)
-    },
     "elevenlabs": { # Example
         "voice_id": os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM"), # Default to Rachel
         "model": "eleven_turbo_v2" # defaults to use the turbo model for low latency

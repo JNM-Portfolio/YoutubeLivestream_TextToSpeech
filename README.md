@@ -10,7 +10,6 @@ Reads YouTube live chat messages based on an activation phrase and uses Text-to-
 *   Filters messages based on a configurable activation phrase.
 *   Reads filtered messages aloud using:
     *   ElevenLabs (High Quality, requires API Key & ffmpeg)
-    *   (Optional) pyttsx3 (Offline, system-dependent)
 *   Displays messages temporarily on screen.
 *   Shows a character (from the game Limbus Company) that "talks" during TTS playback.
 *   Configurable via environment variables (`.env`) and Python script constants.
@@ -25,7 +24,6 @@ Reads YouTube live chat messages based on an activation phrase and uses Text-to-
     *   **Windows:** Download from [ffmpeg.org](https://ffmpeg.org/download.html) (e.g., builds from gyan.dev), unzip, and add the `bin` folder to your system's PATH environment variable.
     *   **macOS:** `brew install ffmpeg`
     *   **Linux (Debian/Ubuntu):** `sudo apt update && sudo apt install ffmpeg`
-*   **(Optional - for pyttsx3):** Depending on your OS, you might need additional system libraries like `espeak` (Linux) or specific frameworks (macOS).
 
 ## Setup
 
@@ -74,7 +72,7 @@ Reads YouTube live chat messages based on an activation phrase and uses Text-to-
 
 You can further configure the application by editing `chat_overlay.py`:
 
-*   `TTS_PROVIDER`: Change between `"elevenlabs"` and `"pyttsx3"`.
+*   `TTS_PROVIDER`: Currently only supports `"elevenlabs"`
 *   `TTS_CONFIG`: Modify settings like voice ID (if not using `.env`), model, rate, etc.
 *   `ACTIVATION_PHRASE`: Change the phrase required to trigger TTS (e.g., `"!say "`). Remember the space at the end if needed.
 

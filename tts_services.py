@@ -1,6 +1,5 @@
 import os
 import time
-import pyttsx3
 from elevenlabs.client import ElevenLabs
 from elevenlabs import play, stream, Voice, VoiceSettings
 import logging
@@ -25,75 +24,6 @@ class BaseTtsService:
         """Perform any cleanup needed when stopping."""
         logging.info(f"Cleaning up {self.__class__.__name__}")
         pass # Optional cleanup actions
-
-# --- pyttsx3 Implementation ---
-class Pyttsx3Service(BaseTtsService):
-    """TTS implementation using pyttsx3 (offline)."""
-    def __init__(self, config=None):
-        super().__init__(config)
-        self.engine = None # Initialize lazily or handle threading issues
-        self._initialize_engine() # Attempt initial setup
-
-    def _initialize_engine(self):
-        """Initializes or re-initializes the pyttsx3 engine."""
-        try:
-            # Consider re-initializing each time if runAndWait blocks persist
-            # Or manage a single engine carefully in the worker thread
-            logging.info("Initializing pyttsx3 engine...")
-            self.engine = pyttsx3.init()
-            # Apply configuration if needed (example)
-            rate = self.config.get('rate', 150)
-            voice_index = self.config.get('voice_index', None)
-            if rate:
-                self.engine.setProperty('rate', rate)
-            if voice_index is not None:
-                try:
-                    voices = self.engine.getProperty('voices')
-                    if 0 <= voice_index < len(voices):
-                        self.engine.setProperty('voice', voices[voice_index].id)
-                    else:
-                        logging.warning(f"Invalid voice_index {voice_index}, using default.")
-                except Exception as e:
-                    logging.warning(f"Could not set voice: {e}")
-            logging.info("pyttsx3 engine initialized.")
-            return True
-        except Exception as e:
-            logging.error(f"Failed to initialize pyttsx3 engine: {e}")
-            self.engine = None
-            return False
-
-    def speak(self, text):
-        if not self.engine:
-            logging.warning("pyttsx3 engine not available. Attempting re-initialization.")
-            if not self._initialize_engine():
-                 logging.error("Cannot speak: pyttsx3 engine failed to initialize.")
-                 # Simulate wait time so UI doesn't get stuck if engine fails
-                 time.sleep(1)
-                 return
-
-        try:
-            logging.info(f"pyttsx3 speaking: '{text}'")
-            self.engine.say(text)
-            self.engine.runAndWait()
-            logging.info("pyttsx3 runAndWait completed.")
-            # Consider engine.stop() here if needed
-            # self.engine.stop()
-        except Exception as e:
-            logging.error(f"Error during pyttsx3 speak: {e}")
-            # Attempt to recover by resetting the engine for the next call
-            self.engine = None
-
-
-    def cleanup(self):
-        super().cleanup()
-        # pyttsx3 doesn't have an explicit global cleanup method usually needed
-        # If we created engine instance per call, cleanup is automatic
-        if self.engine:
-            logging.info("Stopping pyttsx3 engine instance...")
-            # self.engine.stop() # Optional stop on cleanup
-            del self.engine # Release reference
-            self.engine = None
-
 
 # --- ElevenLabs Implementation ---
 class ElevenLabsService(BaseTtsService):
@@ -178,10 +108,8 @@ def get_tts_service(provider_name, config):
     Factory function to create the appropriate TTS service instance.
     """
     provider_name = provider_name.lower()
-    if provider_name == "pyttsx3":
-        logging.info("Creating Pyttsx3Service instance.")
-        return Pyttsx3Service(config.get("pyttsx3"))
-    elif provider_name == "elevenlabs":
+
+    if provider_name == "elevenlabs":
         logging.info("Creating ElevenLabsService instance.")
         # Ensure API key is passed correctly
         el_config = config.get("elevenlabs", {})
