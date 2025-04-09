@@ -56,13 +56,17 @@ tts_queue = queue.Queue()
 socketio_global = None
 active_tts_service: BaseTtsService = None
 pytchat_instance = None # To hold the pytchat object for stopping
-pytchat_thread = None   # To hold the listener thread
+pytchat_listener_thread = None   # To hold the listener thread
+tts_thread = None # To hold the TTS worker thread
+
+# Flag to signal shutdown to threads
+shutdown_event = threading.Event()
 
 # --- TTS Worker ---
 def tts_worker(tts_service: BaseTtsService): # Accepts the service instance
     """Worker thread that processes the TTS queue using the provided service."""
     logging.info(f"TTS Worker Thread Started (Using: {tts_service.__class__.__name__}).")
-    while True:
+    while not shutdown_event.is_set():
         text_to_speak = None
         try:
             logging.info("TTS Worker: Waiting for item from queue...")
@@ -86,19 +90,25 @@ def tts_worker(tts_service: BaseTtsService): # Accepts the service instance
             tts_service.speak(text_to_speak)
             logging.info(f"TTS Worker: {tts_service.__class__.__name__}.speak() COMPLETED.")
 
+        except queue.Empty:
+            # Timeout occurred, just loop again and check shutdown_event
+            continue
         except Exception as e:
             logging.error(f"!!!!!!!! ERROR in TTS worker processing '{text_to_speak}': {e} !!!!!!!!")
             # Avoid super-fast error loops
             time.sleep(1)
 
         finally:
-            # --- Stop Speaking Signal (ALWAYS emit this) ---
-            logging.info("TTS Worker: In finally block, attempting to emit tts_stop...")
-            if socketio_global:
-                socketio_global.emit('tts_stop', namespace='/')
-                logging.info("TTS Worker: Emitted tts_stop.")
-            else:
-                logging.warning("TTS Worker: socketio_global not set, cannot emit tts_stop.")
+            # --- Stop Speaking Signal (ALWAYS emit this, unless shutting down immediately) ---
+            # Only emit stop if we actually started (i.e., text_to_speak was processed)
+            # And only if we are not already shutting down
+            if text_to_speak is not None and not shutdown_event.is_set():
+                logging.info("TTS Worker: In finally block, attempting to emit tts_stop...")
+                if socketio_global:
+                    socketio_global.emit('tts_stop', namespace='/')
+                    logging.info("TTS Worker: Emitted tts_stop.")
+                else:
+                    logging.warning("TTS Worker: socketio_global not set, cannot emit tts_stop.")
 
             # Mark the task as done in the queue
             if text_to_speak is not None:
@@ -108,10 +118,10 @@ def tts_worker(tts_service: BaseTtsService): # Accepts the service instance
                 try:
                      tts_queue.task_done()
                 except ValueError:
-                     logging.warning("TTS Worker: task_done() called when not tracking tasks.")
-
-
-            logging.info("TTS Worker: Loop complete, waiting for next item.")
+                    # Can happen if task_done() is called after queue cleared or on None
+                    logging.debug("TTS Worker: task_done() called when not needed or queue cleared.")
+                except Exception as e_td:
+                    logging.error(f"TTS Worker: Error calling task_done(): {e_td}")
 
     # --- End of Worker Loop ---
     logging.info("TTS Worker: Performing service cleanup...")
@@ -176,11 +186,17 @@ def pytchat_listener_loop(chat: pytchat.LiveChat, callback):
     global pytchat_instance # Reference the global instance for cleanup signal checks
     logging.info("Pytchat listener loop started.")
     try:
-        while chat.is_alive():
+        while not shutdown_event.is_set() and chat.is_alive():
             try:
                 items = chat.get().sync_items()
                 for item in items:
+                    # Check again before processing in case shutdown happened during get()
+                    if shutdown_event.is_set():
+                        break
                     callback(item) # Process message
+                if shutdown_event.is_set():
+                    break # Exit outer loop if shutdown signaled
+
             except pytchat.exceptions.RetryExceededError as e:
                  logging.error(f"Pytchat retry exceeded: {e}. Stopping listener loop.")
                  break # Exit loop on critical error
@@ -194,14 +210,20 @@ def pytchat_listener_loop(chat: pytchat.LiveChat, callback):
                  logging.info("Pytchat instance was terminated externally. Stopping loop.")
                  break
 
-            time.sleep(0.1) # Yield thread
+            time.sleep(0.2) # Yield thread
 
     except Exception as e:
         # Catch errors happening outside the inner try (e.g., if chat object becomes invalid)
         logging.exception(f"Error in Pytchat listener outer loop:")
     finally:
         logging.info("Pytchat listener loop finished.")
-        # We don't set pytchat_instance = None here, the main thread cleanup does that
+        # Make sure the instance is terminated if the loop exits unexpectedly
+        if pytchat_instance:
+            try:
+                logging.info("Pytchat listener ensuring instance is terminated in finally block.")
+                pytchat_instance.terminate()
+            except Exception as e_term:
+                logging.error(f"Error terminating pytchat in listener finally: {e_term}")
 
 # --- Manual Input Function (for testing) ---
 def manual_message_input():
@@ -209,9 +231,10 @@ def manual_message_input():
     logging.info("\n--- MANUAL TEST MODE ---")
     logging.info(f"Type a message starting with '{ACTIVATION_PHRASE}' to test TTS.")
     logging.info("Type 'quit' or 'exit' to stop.")
-    while True:
+    while not shutdown_event.is_set():
         try:
             text = input("Enter test message: ")
+            if shutdown_event.is_set(): break
             if text.lower() in ['quit', 'exit']: break
             # Simulate a basic object that looks like a Pytchat item
             # for the handler's needs
@@ -247,7 +270,6 @@ if __name__ == '__main__':
     if run_youtube_mode:
         try:
             logging.info(f"Creating Pytchat instance for Video ID: {YOUTUBE_VIDEO_ID}...")
-            # <<< Create instance here, BEFORE starting thread >>>
             pytchat_instance = pytchat.create(video_id=YOUTUBE_VIDEO_ID)
             logging.info("Pytchat instance created successfully.")
         except pytchat.exceptions.InvalidVideoIdException:
@@ -261,28 +283,22 @@ if __name__ == '__main__':
             exit(1) # Exit on other creation errors
 
     # --- Start Input Source Thread (Listener or Manual) ---
-    if run_youtube_mode and pytchat_instance: # Check instance was created
+    input_thread = None # <<< ADD: Variable to hold the input thread
+    if run_youtube_mode and pytchat_instance:
         logging.info("Starting Pytchat listener thread...")
-        # <<< Pass the created instance to the loop function >>>
-        pytchat_listener_thread = threading.Thread(
+        pytchat_listener_thread = threading.Thread( # <<< CHANGE: Use specific name <<<
             target=pytchat_listener_loop,
-            args=(pytchat_instance, handle_new_pytchat_message), # Pass instance and callback
-            daemon=True
+            args=(pytchat_instance, handle_new_pytchat_message),
+            daemon=True # Keep daemon=True
         )
+        input_thread = pytchat_listener_thread # Assign to generic input_thread
         pytchat_listener_thread.start()
-    elif not run_youtube_mode:
-        # Start manual input thread
+    else:
+        # Start manual input thread (either by choice or fallback)
         logging.info("Starting manual input thread for testing...")
         manual_input_thread = threading.Thread(target=manual_message_input, daemon=True)
+        input_thread = manual_input_thread # Assign to generic input_thread
         manual_input_thread.start()
-    else:
-         # This case happens if run_youtube_mode was true but instance creation failed
-         logging.error("Pytchat instance creation failed. Cannot start YouTube listener.")
-         # Decide whether to start manual input as fallback or exit
-         logging.warning("Falling back to Manual Input Test Mode.")
-         logging.info("Starting manual input thread for testing...")
-         manual_input_thread = threading.Thread(target=manual_message_input, daemon=True)
-         manual_input_thread.start()
 
 
     # --- Start TTS Worker Thread ---
@@ -292,6 +308,7 @@ if __name__ == '__main__':
 
     # --- Start Flask Server ---
     logging.info("Starting Flask-SocketIO server on http://127.0.0.1:5000")
+    logging.info("Press Ctrl+C to stop the server.")
     try:
         socketio.run(app, host='127.0.0.1', port=5000, use_reloader=False, debug=False, allow_unsafe_werkzeug=True)
     except KeyboardInterrupt:
@@ -302,30 +319,41 @@ if __name__ == '__main__':
         # --- Cleanup ---
         logging.info("Shutting down application...")
 
-        # Stop Pytchat instance if it exists
+        # 1. Signal all threads to stop
+        logging.info("Setting shutdown event...")
+        shutdown_event.set()
+
+        # 2. Stop Pytchat instance (if it exists)
+        # This should help unblock the listener thread's get() call
         if pytchat_instance:
             logging.info("Terminating Pytchat instance...")
             try:
                 pytchat_instance.terminate()
-                # Set instance to None AFTER terminate to help signal loop if needed
-                pytchat_instance = None
+                # Setting to None isn't strictly needed now with the event, but doesn't hurt
+                # pytchat_instance = None
             except Exception as e_term:
                  logging.error(f"Error terminating Pytchat: {e_term}")
 
-        # Wait for listener thread
-        if pytchat_listener_thread and pytchat_listener_thread.is_alive():
-             logging.info("Waiting for Pytchat listener thread...")
-             pytchat_listener_thread.join(timeout=2)
-             if pytchat_listener_thread.is_alive():
-                  logging.warning("Pytchat listener thread did not exit cleanly.")
+        # 3. Wait for the input thread (Pytchat listener or Manual) to exit
+        if input_thread and input_thread.is_alive():
+             logging.info(f"Waiting for {input_thread.name} thread to join...")
+             input_thread.join(timeout=5) # Increased timeout slightly
+             if input_thread.is_alive():
+                  logging.warning(f"{input_thread.name} thread did not exit cleanly after timeout.")
+             else:
+                  logging.info(f"{input_thread.name} thread joined successfully.")
 
-        # Signal and wait for TTS worker
-        logging.info("Signaling TTS worker to exit...")
+       # 4. Signal and wait for TTS worker
+        #    - Send None to potentially unblock queue.get() faster than timeout
+        #    - shutdown_event is already set, so it will exit its loop anyway
+        logging.info("Signaling TTS worker queue with None...")
         tts_queue.put(None)
         if tts_thread and tts_thread.is_alive():
             logging.info("Waiting for TTS worker thread to finish...")
-            tts_thread.join(timeout=7)
+            tts_thread.join(timeout=10) # Allow time for final TTS playback if any + cleanup
             if tts_thread.is_alive():
-                 logging.warning("TTS worker thread did not exit cleanly.")
+                 logging.warning("TTS worker thread did not exit cleanly after timeout.")
+            else:
+                 logging.info("TTS worker thread joined successfully.")
 
         logging.info("Application finished.")
